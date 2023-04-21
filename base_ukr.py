@@ -94,32 +94,15 @@ def generate_optimized_ukr(MR, NR, KC, LANE, windowing = 0):
       p = from_X_to_Xreg(p, 'A', 'i' , MR,LANE)
       # B
       p = from_X_to_Xreg(p, 'B', 'j' , NR,LANE)
+      # fmla
+      p = reorder_loops(p,'jtt it')
+      p = replace(p, 'for itt in _: _ #0', neon_vfmla_4xf32_4xf32)
       return p
 
 
 
 """
 
-buf='A'
-p = bind_expr(p, f'{buf}[_]', f'{buf}_vec')
-p = expand_dim(p, f'{buf}_vec', LANE, 'itt', unsafe_disable_checks=True)
-p = expand_dim(p, f'{buf}_vec', AFAC, 'it', unsafe_disable_checks=True)
-p = lift_alloc(p, f'{buf}_vec', n_lifts=5)
-p = replace(p, 'for itt in _: _ #0', neon_vld_4xf32)
-p = set_memory(p, f'{buf}_vec', Neon4f)
-#p = divide_loop(p,'i #1', LANE, ['ii','iii'], perfect=True)
-
-print("A matrix\n",p)
-
-buf='B'
-p = bind_expr(p, f'{buf}[_]', f'{buf}_vec')
-p = expand_dim(p, f'{buf}_vec', LANE, 'jtt', unsafe_disable_checks=True)
-p = expand_dim(p, f'{buf}_vec', NO, 'jt', unsafe_disable_checks=True)
-p = lift_alloc(p, f'{buf}_vec', n_lifts=5)
-p = autofission(p, p.find(f'{buf}_vec[_] = _').after(),n_lifts=4)
-p = replace(p, 'for jtt in _: _ #1', neon_vld_4xf32)
-p = set_memory(p, f'{buf}_vec', Neon4f)
-print("B matrix\n",p);
 #p = unroll_loop(p,'it #0')
 p = unroll_loop(p,'jtt #0')
 #p = unroll_loop(p,'jt #0')
@@ -129,7 +112,6 @@ p = unroll_loop(p,'jtt #0')
 #print("Pre pre Unroll\n",p); 
 #p = reorder_loops(p,'jtt it')
 #print("Pre Unroll\n",p); 
-p = replace(p, 'for itt in _: _ #0', neon_vfmla_4xf32_4xf32)
 #print("Unroll\n",p); 
 #p = unroll_loop(p,'jtt #0')
 #p = unroll_loop(p,'it #0')
