@@ -118,26 +118,3 @@ def generate_optimized_ukr(MR, NR, KC, LANE, windowing = 0):
       return p
 
 
-
-"""
-
-#p = unroll_loop(p,'it #0')
-p = unroll_loop(p,'jtt #0')
-#p = unroll_loop(p,'jt #0')
-
-#p = unroll_loop(p,'it #0')
-#p = unroll_loop(p,'jt #0')
-#print("Pre pre Unroll\n",p); 
-#p = reorder_loops(p,'jtt it')
-#print("Pre Unroll\n",p); 
-#print("Unroll\n",p); 
-#p = unroll_loop(p,'jtt #0')
-#p = unroll_loop(p,'it #0')
-#p = unroll_loop(p,'jt #0')
-#p = unroll_loop(p,'it #0')
-#p = unroll_loop(p,'jtt #0')
-#p = unroll_loop(p,'jt #0')
-p=simplify(p)
-print("Final\n",p)
-"""
-
