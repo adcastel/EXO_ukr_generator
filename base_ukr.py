@@ -50,6 +50,16 @@ def vectorial_memory(p, var, mem):
     p = set_memory(p, var, mem)
     return p
 
+def from_X_to_Xreg(p, Buf, loop, F, LANE):
+    Xreg='{}_reg'.format(Buf)
+    p = bind_expr(p, '{}[_]'.format(Buf),Xreg)
+    p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
+    p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
+    p = lift_alloc(p, Xreg, n_lifts=5)
+    p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=4)
+    p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
+    p = set_memory(p, Xreg, Neon)
+    return p
 def from_C_to_Creg_2d(p, MR, NR, LANE):
       Cp = 'C[{} * jt + jtt, {} * it + itt]'.format(LANE,LANE)
       p = stage_mem(p, 'C[_] += _', Cp, 'C_reg')
@@ -63,6 +73,9 @@ def from_C_to_Creg_2d(p, MR, NR, LANE):
       p = replace(p, 'for itt in _: _ #0', neon_vld_4xf32)
       p = replace(p, 'for itt in _: _ #1', neon_vst_4xf32)
       p = vectorial_memory(p, 'C_reg', Neon)
+      p = unroll_loop(p,'it')
+      p = unroll_loop(p,'jtt')
+      p = unroll_loop(p,'jt')
       return  p
 
 def generate_optimized_ukr(MR, NR, KC, LANE, windowing = 0):
@@ -77,25 +90,21 @@ def generate_optimized_ukr(MR, NR, KC, LANE, windowing = 0):
 
       # C 
       p = from_C_to_Creg_2d(p, MR, NR, LANE)
+      # A
+      p = from_X_to_Xreg(p, 'A', 'i' , MR,LANE)
+      # B
+      p = from_X_to_Xreg(p, 'B', 'j' , NR,LANE)
       return p
 
 
 
 """
-print("C matrix\n",p)
-p = set_memory(p, 'C_reg', Neon4f)
-print("C matrix\n",p)
 
-#print("C matrix\n",p)
-#p = divide_loop(p,'i #1', LANE, ['it','itt'], perfect=True)
-#p = reorder_loops(p,'itt jt')
-#print("C matrix\n",p)
 buf='A'
 p = bind_expr(p, f'{buf}[_]', f'{buf}_vec')
 p = expand_dim(p, f'{buf}_vec', LANE, 'itt', unsafe_disable_checks=True)
 p = expand_dim(p, f'{buf}_vec', AFAC, 'it', unsafe_disable_checks=True)
 p = lift_alloc(p, f'{buf}_vec', n_lifts=5)
-#p = autofission(p, p.find(f'{buf}_vec[_] = _').after(), n_lifts=3)
 p = replace(p, 'for itt in _: _ #0', neon_vld_4xf32)
 p = set_memory(p, f'{buf}_vec', Neon4f)
 #p = divide_loop(p,'i #1', LANE, ['ii','iii'], perfect=True)
