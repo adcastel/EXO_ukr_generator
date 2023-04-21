@@ -1,0 +1,10 @@
+Este ukernel funciona con C almacenada por filas. Para ello, en lugar de hacer C=A*B, hacemos C=B*A^T.
+
+
+La A^T es necesaria para imitar el packing de A y que venga en posiciones contiguas de memoria.
+
+C[i,j] += B[k,j]*A[k,i]
+
+Este método copia el comportamiento de los microkernels de la QBLIS que cuando C se almacena por columnas, hace el cambio de A por B dentro del microkernel.
+
+
