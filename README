@@ -1,10 +1,4 @@
-Este ukernel funciona con C almacenada por filas. Para ello, en lugar de hacer C=A*B, hacemos C=B*A^T.
+EXO ukr generator
 
-
-La A^T es necesaria para imitar el packing de A y que venga en posiciones contiguas de memoria.
-
-C[i,j] += B[k,j]*A[k,i]
-
-Este método copia el comportamiento de los microkernels de la QBLIS que cuando C se almacena por columnas, hace el cambio de A por B dentro del microkernel.
-
-
+This software generates automatically specialized C code for a given architecture with the EXO compiler.
+Currently only ARM neon codes are available.
