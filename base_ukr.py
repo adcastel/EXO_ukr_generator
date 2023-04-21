@@ -87,16 +87,34 @@ def generate_optimized_ukr(MR, NR, KC, LANE, windowing = 0):
       #loops partition
       p = split_loop(p, 'i', LANE)
       p = split_loop(p, 'j', LANE)
-
+      p = simplify(p)
       # C 
       p = from_C_to_Creg_2d(p, MR, NR, LANE)
+      p = simplify(p)
       # A
       p = from_X_to_Xreg(p, 'A', 'i' , MR,LANE)
+      p = simplify(p)
       # B
       p = from_X_to_Xreg(p, 'B', 'j' , NR,LANE)
+      p = simplify(p)
       # fmla
       p = reorder_loops(p,'jtt it')
       p = replace(p, 'for itt in _: _ #0', neon_vfmla_4xf32_4xf32)
+      p = simplify(p)
+      
+      #unroll A and B loads
+      p = unroll_loop(p,'it')
+      p = unroll_loop(p,'jt')
+      
+      #unroll fmla
+      p = unroll_loop(p,'jtt')
+      p = unroll_loop(p,'it')
+      p = unroll_loop(p,'jt')
+      
+      #unroll C store
+      p = unroll_loop(p,'it')
+      p = unroll_loop(p,'jtt')
+      p = unroll_loop(p,'jt')
       return p
 
 
