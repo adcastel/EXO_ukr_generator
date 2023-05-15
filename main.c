@@ -26,10 +26,6 @@ void simplegemm(){
 	   for ( j=0; j<N; j++ )
 		   for ( i=0; i<M; i++ )
 			   Cref(i,j) = Cref(i,j) + Aref(i,p) * Bref(j,p);
-/*   for (int k=0; k<K;k++)
-     for(int j=0; j<N;j++)
-      for(int i = 0; i < M; i++)
-	   C3[j*M+i] += A[k*M+i] * B[j*K+k];*/
 }
 
 void initialize() {
@@ -57,75 +53,34 @@ void initialize() {
 int main() {
   clock_t start, end;
   float msec;
-  int reps=1;
-//int M=8, N=12;
+  int reps=1000;
   initialize();
   double gflops = (2.0*M*N*K)/1e9;
-  // Calling original matmul
-  start = clock();
-    //base_ukernel(NULL, M, N, K, C, A, B);
-  for (int i = 0; i < reps; i++)
-    example_sgemm(NULL, K, C, A, B);
-  end = clock();
-  
-  msec = ((double)(end - start) / (double)CLOCKS_PER_SEC)/(1.0*reps);
-  double tt =  msec;
-  double gf = gflops/tt;
-  printf("Time taken for original matmul: %f seconds -> %f gflops\n",
-      tt, gf);
+  float alpha = 1.0;
+  float beta = 1.0;
 
   // Calling scheduled matmul
   start = clock();
-  for (int i = 0; i < reps; i++)
-    uk_8x12(NULL, K, C2, A,B); //, M,1,N,1);
-    //uk_8x12(NULL, K, (struct exo_win_2f32){C2,{1,M}}, (struct exo_win_2f32c){A,{1,M}}, (struct exo_win_2f32c){B,{1,K}}); //, M,1,N,1);
-  end = clock();
+  for (int i = 0; i < reps; i++){
+    uk_8x12_a1True_b1True(NULL, K, &alpha, A,B, &beta, C2);
+    
+//uk_wind_8x12_a1True_b1True(NULL, K,  &alpha, A,B, &beta, (struct exo_win_2f32){C2,{M,1}});
+  }
+    end = clock();
 
-  //msec = (end - start) * 1000 / CLOCKS_PER_SEC;
   msec = ((double)(end - start) / (double) CLOCKS_PER_SEC)/reps;
-  //printf("Time taken for scheduled matmul: %d seconds %d milliseconds\n",
-  tt =  msec;
-  gf = gflops/tt;
+  double tt =  msec;
+  double gf = gflops/tt;
   printf("Time taken for scheduled matmul: %f seconds -> %f gflops\n",
       tt, gf);
- /* 
-  start = clock();
-  for (int i = 0; i < reps; i++)
-    uk_8x12_windowed(NULL, K, (struct exo_win_2f32){C3,{M,1}}, (struct exo_win_2f32c){A,{M,1}}, (struct exo_win_2f32c){B,{N,1}}); //, M,1,N,1);
-  end = clock();
-
-  //msec = (end - start) * 1000 / CLOCKS_PER_SEC;
-  msec = ((double)(end - start) / (double) CLOCKS_PER_SEC)/reps;
-  //printf("Time taken for scheduled matmul: %d seconds %d milliseconds\n",
-  tt =  msec;
-  gf = gflops/tt;
-  printf("Time taken for scheduled matmul_windowed: %f seconds -> %f gflops\n",
-      tt, gf);
-  start = clock();
-  for (int i = 0; i < reps; i++)
-    uk_assert_8x12(NULL, K, (struct exo_win_2f32){C4,{M,1}}, (struct exo_win_2f32c){A,{M,1}}, (struct exo_win_2f32c){B,{N,1}});
-  end = clock();
-
-  //msec = (end - start) * 1000 / CLOCKS_PER_SEC;
-  msec = ((double)(end - start) / (double) CLOCKS_PER_SEC)/reps;
-  //printf("Time taken for scheduled assert matmul: %d seconds %d milliseconds\n",
-  tt =  msec;
-  gf = gflops/tt;
-  printf("Time taken for scheduled assert matmul_windowed: %f seconds -> %f gflops\n",
-      tt, gf);
-      //msec / 1000, msec % 1000);
-      //
-      */
   for (int i = 0; i < reps; i++)
   simplegemm();
   for(int i = 0; i< M; i++)
   for(int j = 0; j< N; j++){
-	  //if(C[i* N + j]==C2[i*N+j] && C2[i*N+j] == C3[i*N+j])
 	  if(C2[i* N + j]== C3[i*N+j])
 		  continue;
 	  else
-	  	 printf("ERROR %f %f %f\n",C[i*N+j],C2[i*N+j],C3[i*N+j]);
-          //printf("C[%d]=%f, C2[%d]=%f,C3[%d]=%f\n",i* N + j,C[i* N + j],i* N + j,C2[i* N + j],i* N + j,C3[i* N + j]);
+	  	 printf("ERROR %f %f\n",C[i*N+j],C2[i*N+j]);
   }
   printf("PERFECTO!\n");
   return (0);
