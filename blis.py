@@ -8,7 +8,7 @@ LANE = 4
 alpha1=True
 beta1=True
 
-# Version of the paper CG= 2024
+# Version of the paper CG0 2024
 q = generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE)
 print(q)
 
