@@ -53,7 +53,7 @@ void initialize() {
 int main() {
   clock_t start, end;
   float msec;
-  int reps=1000;
+  int reps=100000;
   initialize();
   double gflops = (2.0*M*N*K)/1e9;
   float alpha = 1.0;
@@ -82,6 +82,6 @@ int main() {
 	  else
 	  	 printf("ERROR %f %f\n",C[i*N+j],C2[i*N+j]);
   }
-  printf("PERFECTO!\n");
+  printf("DONE!\n");
   return (0);
 }
