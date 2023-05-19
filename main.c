@@ -31,12 +31,12 @@ void simplegemm(){
 void initialize() {
   for (int i = 0; i < M; i++) {
     for (int j = 0; j < K; j++) {
-      A[i * K + j] = (i * K + j)*0.1;//3.2;
+      A[i * K + j] = (i * K + j);//*0.1;//3.2;
     }
   }
   for (int i = 0; i < K; i++) {
     for (int j = 0; j < N; j++) {
-      B[i * N + j] = (i * N + j)*0.2;
+      B[i * N + j] = (i * N + j);//*0.2;
     }
   }
   for (int i = 0; i < M; i++) {
@@ -77,10 +77,11 @@ int main() {
   simplegemm();
   for(int i = 0; i< M; i++)
   for(int j = 0; j< N; j++){
-	  if(C2[i* N + j]== C3[i*N+j])
-		  continue;
+	  if(C2[j* M + i] == C3[j*M+i])
+	  	 //printf("OK %f %f\n",C2[j*M+i],C3[j*M+i]);
+		 continue;
 	  else
-	  	 printf("ERROR %f %f\n",C[i*N+j],C2[i*N+j]);
+	  	 printf("ERROR %f %f\n",C2[j*M+i],C3[j*M+i]);
   }
   printf("DONE!\n");
   return (0);

@@ -69,17 +69,31 @@ def vectorial_memory(p, var, mem):
 def from_X_to_Xreg(p, Buf, loop, F, up1, up2, LANE, data):
     Xreg='{}_reg'.format(Buf)
     p = bind_expr(p, '{}[_]'.format(Buf),Xreg)
-    p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
-    p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
-    p = lift_alloc(p, Xreg, n_lifts=up1)
-    p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
-    if data == "f32":
-        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
-        p = set_memory(p, Xreg, Neon)
-    elif data == "f16":
-        p = set_precision(p, Xreg, data)
-        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_8xf16)
-        p = set_memory(p, Xreg, Neon8f)
+    if F % LANE == 0:
+        p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
+        p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
+        p = lift_alloc(p, Xreg, n_lifts=up1)
+        p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
+        if data == "f32":
+            p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
+            p = set_memory(p, Xreg, Neon)
+        elif data == "f16":
+            p = set_precision(p, Xreg, data)
+            p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_8xf16)
+            p = set_memory(p, Xreg, Neon8f)
+    else:
+        p = expand_dim(p, Xreg , LANE, 'jtt'.format(loop), unsafe_disable_checks=True)
+        p = expand_dim(p, Xreg , F, '{}'.format(loop), unsafe_disable_checks=True)
+        p = lift_alloc(p, Xreg, n_lifts=up1)
+        p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
+        print('DEBUG',p)
+        if data == "f32":
+            p = replace(p, 'for jtt in _: _ #0', neon_broadcast_4xf32)
+            p = set_memory(p, Xreg, Neon)
+        elif data == "f16":
+            p = set_precision(p, Xreg, data)
+            p = replace(p, 'for jtt in _: _ #0', neon_broadcast_8xf16)
+            p = set_memory(p, Xreg, Neon8f)
     return p
 
 
@@ -169,8 +183,74 @@ def specialize_microkernel(p, precision, alpha1, beta1):
 def set_windowing(p):
     p = set_window(p, "C", True)
     return p
+
+def from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data):
+      #we need to tackle the initialization of C to 0
+      name='C'
+      if beta1 == False:
+          name = name+'b'
+      name_reg=name+'_reg'
+      if beta1 == False:
+          name_reg = 'tmp'
+      Cp = '{}[{} * jt + jtt, i]'.format(name,LANE)
+      p = stage_mem(p, '{}[_] += _'.format(name), Cp, name_reg)
+      p = expand_dim(p, name_reg, LANE, 'jtt', unsafe_disable_checks=True)
+      p = expand_dim(p, name_reg, NR//LANE, 'jt'.format(LANE), unsafe_disable_checks=True)
+      p = expand_dim(p, name_reg, MR, 'i', unsafe_disable_checks=True)
+      if beta1 == False:
+          p = reuse_buffer(p, "Cb_reg:_", 'tmp')
+          name_reg = 'Cb_reg'
+      if beta1 == True:
+           p = lift_alloc(p, name_reg, n_lifts=4)
+      p = autofission(p, p.find('{}[_] = _'.format(name_reg)).after(), n_lifts=4)
+      p = autofission(p, p.find('{}[_] = _'.format(name)).before(), n_lifts=4)
+      print(p) 
+      
+      #TODO: read instructions and type from file
+      if data == "f32": 
+          p = replace(p, 'for jtt in _: _ #0', neon_vld_4xf32)
+          p = replace(p, 'for jtt in _: _ #1', neon_vst_4xf32)
+          p = vectorial_memory(p, name_reg, Neon)
+      elif data == "f16": 
+          p = replace(p, 'for jtt in _: _ #0', neon_vld_8xf16)
+          p = replace(p, 'for jtt in _: _ #1', neon_vst_8xf16)
+          p = vectorial_memory(p, name_reg, Neon8f)
+      p = unroll_loop(p,'jt')
+      p = unroll_loop(p,'i')
+      return  simplify(p)
+
+def generate_non_multiple(p, MR,NR,KC,alpha1,beta1,LANE,windowing, data):
+    p = reorder_loops(p, 'j i')
+    p = split_loop(p, 'j', LANE)
+    p = simplify(p)
+    print("LOOPS\n",p)
+    print("Warning! We are working on it so the result may not be the desired one :)")
+    # WOR-IN-PROGRESS
+    # THIS IS NOT READY FOR PRODUCTION
+    return p
+    # C 
+    p = from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data)
+    p = simplify(p)
+    print("C\n",p)
+    # A
+    p = from_X_to_Xreg(p, 'A', 'i' , MR, 4, 3, LANE, data)
+    p = simplify(p)
+    print("A\n",p)
+    # B
+    p = from_X_to_Xreg(p, 'B', 'j' , NR,4, 3, LANE, data)
+    p = simplify(p)
+    print("B\n",p)
+    if data == "f32":
+      p = replace(p, 'for jtt in _: _ #0', neon_vfmadd_4xf32_4xf32)
+    else:
+      p = replace(p, 'for jtt in _: _ #0', neon_vfmadd_8xf16_8xf16)
+    p = simplify(p)
+    print("FMLA\n",p)
+    return p
+
 def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data="f32"):
       p = simplify(ukernel_get_ref(MR,NR, alpha1, beta1))
+
       if data != "f32":
           p = specialize_microkernel(p,data,alpha1,beta1)
       if windowing:
@@ -180,7 +260,10 @@ def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data=
           p = rename(p, "uk_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
       #loops partition
       #manage C initialization
-      if beta1 == False and MR != 1:
+      if MR % LANE != 0:
+          return generate_non_multiple(p, MR,NR,KC,alpha1,beta1,LANE,windowing, data)
+      
+      if beta1 == False:
           p = manage_C_init(p, MR,NR, LANE, data)
       
       #main loop
@@ -191,21 +274,10 @@ def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data=
       # C 
       p = from_C_to_Creg_2d(p, MR, NR, beta1, LANE, data)
       p = simplify(p)
-      # A
       print("C\n",p)
-      if MR % LANE == 0:
-          p = from_X_to_Xreg(p, 'A', 'i' , MR, 5, 4, LANE, data)
-          p = simplify(p)
-      else:
-          Buf = 'A'
-          Xreg='{}_reg'.format(Buf)
-          p = bind_expr(p, '{}[_]'.format(Buf),Xreg)
-          p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
-          p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)    
-          p = lift_alloc(p, Xreg, n_lifts=up1)
-          p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
-          p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)    
-          p = set_memory(p, Xreg, Neon)
+      # A
+      p = from_X_to_Xreg(p, 'A', 'i' , MR, 5, 4, LANE, data)
+      p = simplify(p)
       print("A\n",p)
       # B
       p = from_X_to_Xreg(p, 'B', 'j' , NR,5, 4, LANE, data)

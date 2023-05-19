@@ -13,8 +13,8 @@ q = generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE)
 print(q)
 
 # if we want to use windowed feature for C
-x = generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE,windowing=1) #windowing version
-print(x)
+#x = generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE,windowing=1) #windowing version
+#print(x)
 
 # if we want use fp16 
 #w = generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE,windowing=1, data="f16") #windowing version
