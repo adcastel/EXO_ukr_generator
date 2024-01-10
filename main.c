@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <time.h>
 
-#include "uk.h"
+#include "uk_exo.h"
 
 #define M 8
 #define N 12
@@ -59,20 +59,15 @@ int main() {
   float alpha = 1.0;
   float beta = 1.0;
 
+  printf("TEST STARTING...!\n");
   // Calling scheduled matmul
   start = clock();
   for (int i = 0; i < reps; i++){
-    uk_8x12_a1True_b1True(NULL, K, &alpha, A,B, &beta, C2);
-    
-//uk_wind_8x12_a1True_b1True(NULL, K,  &alpha, A,B, &beta, (struct exo_win_2f32){C2,{M,1}});
+      uk_8x12_a1True_b1True(NULL, K, &alpha, A,B, &beta, (struct exo_win_2f32){C2,{M,1}});
   }
     end = clock();
 
   msec = ((double)(end - start) / (double) CLOCKS_PER_SEC)/reps;
-  double tt =  msec;
-  double gf = gflops/tt;
-  printf("Time taken for scheduled matmul: %f seconds -> %f gflops\n",
-      tt, gf);
   for (int i = 0; i < reps; i++)
   simplegemm();
   for(int i = 0; i< M; i++)
@@ -83,6 +78,6 @@ int main() {
 	  else
 	  	 printf("ERROR %f %f\n",C2[j*M+i],C3[j*M+i]);
   }
-  printf("DONE!\n");
+  printf("PASS!\n");
   return (0);
 }

@@ -2,7 +2,6 @@
 from __future__ import annotations
 #from exo import *
 from exo import proc
-from exo.platforms.x86 import *
 from exo.platforms.neon import *
 
 from exo.stdlib.scheduling import *
@@ -69,31 +68,17 @@ def vectorial_memory(p, var, mem):
 def from_X_to_Xreg(p, Buf, loop, F, up1, up2, LANE, data):
     Xreg='{}_reg'.format(Buf)
     p = bind_expr(p, '{}[_]'.format(Buf),Xreg)
-    if F % LANE == 0:
-        p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
-        p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
-        p = lift_alloc(p, Xreg, n_lifts=up1)
-        p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
-        if data == "f32":
-            p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
-            p = set_memory(p, Xreg, Neon)
-        elif data == "f16":
-            p = set_precision(p, Xreg, data)
-            p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_8xf16)
-            p = set_memory(p, Xreg, Neon8f)
-    else:
-        p = expand_dim(p, Xreg , LANE, 'jtt'.format(loop), unsafe_disable_checks=True)
-        p = expand_dim(p, Xreg , F, '{}'.format(loop), unsafe_disable_checks=True)
-        p = lift_alloc(p, Xreg, n_lifts=up1)
-        p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
-        print('DEBUG',p)
-        if data == "f32":
-            p = replace(p, 'for jtt in _: _ #0', neon_broadcast_4xf32)
-            p = set_memory(p, Xreg, Neon)
-        elif data == "f16":
-            p = set_precision(p, Xreg, data)
-            p = replace(p, 'for jtt in _: _ #0', neon_broadcast_8xf16)
-            p = set_memory(p, Xreg, Neon8f)
+    p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
+    p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
+    p = lift_alloc(p, Xreg, n_lifts=up1)
+    p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
+    if data == "f32":
+        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
+        p = set_memory(p, Xreg, Neon)
+    elif data == "f16":
+        p = set_precision(p, Xreg, data)
+        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_8xf16)
+        p = set_memory(p, Xreg, Neon8f)
     return p
 
 
@@ -219,70 +204,36 @@ def from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data):
       p = unroll_loop(p,'i')
       return  simplify(p)
 
-def generate_non_multiple(p, MR,NR,KC,alpha1,beta1,LANE,windowing, data):
-    p = reorder_loops(p, 'j i')
-    p = split_loop(p, 'j', LANE)
-    p = simplify(p)
-    print("LOOPS\n",p)
-    print("Warning! We are working on it so the result may not be the desired one :)")
-    # WOR-IN-PROGRESS
-    # THIS IS NOT READY FOR PRODUCTION
-    return p
-    # C 
-    p = from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data)
-    p = simplify(p)
-    print("C\n",p)
-    # A
-    p = from_X_to_Xreg(p, 'A', 'i' , MR, 4, 3, LANE, data)
-    p = simplify(p)
-    print("A\n",p)
-    # B
-    p = from_X_to_Xreg(p, 'B', 'j' , NR,4, 3, LANE, data)
-    p = simplify(p)
-    print("B\n",p)
-    if data == "f32":
-      p = replace(p, 'for jtt in _: _ #0', neon_vfmadd_4xf32_4xf32)
-    else:
-      p = replace(p, 'for jtt in _: _ #0', neon_vfmadd_8xf16_8xf16)
-    p = simplify(p)
-    print("FMLA\n",p)
-    return p
 
 def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data="f32"):
       p = simplify(ukernel_get_ref(MR,NR, alpha1, beta1))
-
       if data != "f32":
           p = specialize_microkernel(p,data,alpha1,beta1)
       if windowing:
-          p = rename(p, "uk_wind_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
+          p = rename(p, "uk_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
           p = set_windowing(p)
       else:
           p = rename(p, "uk_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
-      #loops partition
-      #manage C initialization
-      if MR % LANE != 0:
-          return generate_non_multiple(p, MR,NR,KC,alpha1,beta1,LANE,windowing, data)
       
       if beta1 == False:
           p = manage_C_init(p, MR,NR, LANE, data)
-      
+      print("V1 (Figure 6 of CGO 2024 paper)\n",p)
       #main loop
       p = split_loop(p, 'i', LANE)
       p = split_loop(p, 'j', LANE)
       p = simplify(p)
-      print("LOOPS\n",p)
+      print("V2 (Figure 7 of CGO 2024 paper)\n",p)
       # C 
       p = from_C_to_Creg_2d(p, MR, NR, beta1, LANE, data)
       p = simplify(p)
-      print("C\n",p)
+      print("V3 (Figure 8 of CGO 2024 paper)\n",p)
       # A
       p = from_X_to_Xreg(p, 'A', 'i' , MR, 5, 4, LANE, data)
       p = simplify(p)
-      print("A\n",p)
       # B
       p = from_X_to_Xreg(p, 'B', 'j' , NR,5, 4, LANE, data)
       p = simplify(p)
-      print("B\n",p)
+      print("V4 (Figure 9 of CGO 2024 paper)\n",p)
       
       # fmla
       p = reorder_loops(p,'jtt it')
@@ -291,10 +242,11 @@ def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data=
       else:
           p = replace(p, 'for itt in _: _ #0', neon_vfmla_8xf16_8xf16)
       p = simplify(p)
-      print("FMLA\n",p)
+      print("V5 (Figure 10 of CGO 2024 paper)\n",p)
       #unroll A and B loads
       p = unroll_loop(p,'it')
       p = unroll_loop(p,'jt')
+      print("V6 (Figure 11 of CGO 2024 paper)\n",p)
       
       #unroll fmla
       p = unroll_loop(p,'jtt')
@@ -305,7 +257,6 @@ def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data=
       p = unroll_loop(p,'it')
       p = unroll_loop(p,'jtt')
       p = unroll_loop(p,'jt')
-      print("FINAL\n",p)
       
       if beta1 == False:
           p = manage_C_end(p, MR,NR, LANE)

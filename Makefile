@@ -1,22 +1,18 @@
 CFLAGS ?= -O3 -march=armv8.2-a+simd+fp+fp16fml
-CC=gcc-10
+CC=gcc
 
-all: uk 
+all: uk_exo 
 
-uk: uk.o  main.o
+uk_exo: uk_exo.o  main.o
 
-#uk_dyn: uk.o uk_dyn.o  main.o
 
-uk.c: blis.py
+uk_exo.c: generator.py
 	exocc -o . --stem $(*F) $^
 
-#uk_dyn.c: blis_dyn.py
-#	exocc -o . --stem $(*F) $^
 
-#main.c: uk.c uk_dyn.c
-main.c: uk.c 
+main.c: uk_exo.c 
 
 .PHONY: clean
 clean:
-	$(RM) uk uk.* *.o 
+	$(RM) uk_exo uk_exo.* *.o 
 	$(RM) -r __pycache__/
