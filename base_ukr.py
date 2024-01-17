@@ -1,55 +1,24 @@
 # example.py
 from __future__ import annotations
 #from exo import *
+import exo
 from exo import proc
 from exo.platforms.neon import *
-
 from exo.stdlib.scheduling import *
+from kernels.gemm.ukgemm import *
 
 
-
-#@proc
-def ukernel_get_ref(
-    MR: size,
-    NR: size,
-    alpha1: bool,
-    beta1: bool,
+@exo.instr("{dst_data} = vfmaq_laneq_f32({dst_data}, {lhs_data}, {rhs_data}, {lane});")
+def neon_vfmladrian_4xf32_4xf32(dst: [f32][4] @ Neon, lhs: [f32][4] @ Neon, rhs: [f32][4]@ Neon, lane: index):
+    assert stride(dst, 0) == 1
+    assert stride(lhs, 0) == 1
+    assert stride(rhs, 0) == 1
+    assert lane >= 0
+    assert lane < 4
     
-):
-    def ukernel_ref(
-        KC: size,
-        alpha: f32[1],
-        A: f32[KC, MR] @ DRAM,
-        B: f32[KC, NR] @ DRAM,
-        beta: f32[1],
-        C: f32[NR, MR] @ DRAM,
-    ):
-        Ba: f32[KC,NR] @ DRAM
-        Cb: f32[NR,MR] @ DRAM
-        
-        if beta1 == False:
-            for cj in seq(0, NR):
-                for ci in seq(0, MR):
-                   Cb[cj,ci] = C[cj,ci] * beta[0]
-        if alpha1 == False:
-            for bk in seq(0, KC):
-                for bj in seq(0, NR):
-                    B[bk,bj] = B[bk,bj] * alpha[0]
+    for i in seq(0, 4):
+        dst[i] += lhs[i] * rhs[i]
 
-        for k in seq(0, KC):
-            for j in seq(0, NR):
-                for i in seq(0, MR):
-                    if beta1 == False:
-                        Cb[j, i] += A[k,i] * B[k,j] 
-                    else: 
-                        C[j, i] += A[k,i] * B[k,j] 
-    
-        if beta1 == False:
-            for cj in seq(0, NR):
-                for ci in seq(0, MR):
-                   C[cj,ci] = Cb[cj,ci]
-    
-    return proc(ukernel_ref)
 
 
 def generate_original_ukr(MR, NR, KC, alpha1, beta1):
@@ -57,65 +26,101 @@ def generate_original_ukr(MR, NR, KC, alpha1, beta1):
       p = rename(p, "example_sgemm_a1{}_b1{}".format(alpha1,beta1))
       return p
 
-
+######## LOOP ZONE
 def split_loop(p, loop, LANE):
     return divide_loop(p,loop, LANE, ['{}t'.format(loop),'{}tt'.format(loop)], perfect=True)
+
+def loop_split(p, loop, size):
+    for l in loop:
+        p = split_loop(p, l, size)
+    return p
+
+def loop_unroll(p, loop):
+    for l in loop:
+        p = unroll_loop(p, l)
+    return p
+
+#########  MEMORY ZONE
 
 def vectorial_memory(p, var, mem):
     p = set_memory(p, var, mem)
     return p
 
-def from_X_to_Xreg(p, Buf, loop, F, up1, up2, LANE, data):
+def from_X_to_Xreg(p, Buf, loop, F, up1, up2, LANE, intrinsics, data):
     Xreg='{}_reg'.format(Buf)
     p = bind_expr(p, '{}[_]'.format(Buf),Xreg)
     p = expand_dim(p, Xreg , LANE, '{}tt'.format(loop), unsafe_disable_checks=True)
     p = expand_dim(p, Xreg, F//LANE, '{}t'.format(loop), unsafe_disable_checks=True)
     p = lift_alloc(p, Xreg, n_lifts=up1)
     p = autofission(p, p.find('{}[_] = _'.format(Xreg)).after(),n_lifts=up2)
-    if data == "f32":
-        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_4xf32)
-        p = set_memory(p, Xreg, Neon)
-    elif data == "f16":
+    if data == "f16":
         p = set_precision(p, Xreg, data)
-        p = replace(p, 'for {}tt in _: _ #0'.format(loop), neon_vld_8xf16)
-        p = set_memory(p, Xreg, Neon8f)
+    p = replace(p, 'for {}tt in _: _ #0'.format(loop), intrinsics['load'])
+    p = set_memory(p, Xreg, Neon)
     return p
 
 
-def from_C_to_Creg_2d(p, MR, NR, beta1, LANE, data):
+def from_C_to_Creg_2d(p, MR, NR, beta1, LANE, intrinsics, data):
       #we need to tackle the initialization of C to 0
       name='C'
-      if beta1 == False:
-          name = name+'b'
+      #if beta1 == False:
+      #    name = name+'b'
       name_reg=name+'_reg'
-      if beta1 == False:
-          name_reg = 'tmp'
-      Cp = '{}[{} * jt + jtt, {} * it + itt]'.format(name,LANE,LANE)
-      p = stage_mem(p, '{}[_] += _'.format(name), Cp, name_reg)
+      #if beta1 == False:
+      #    name_reg = 'tmp'
+      if beta1 == True:
+          Cp = '{}[{} * jt + jtt, {} * it + itt]'.format(name,LANE,LANE)
+          p = stage_mem(p, '{}[_] += _'.format(name), Cp, name_reg)
+      else:
+          Cp = '{}[jtt + {} * jt, itt + {} * it]'.format(name,LANE,LANE)
+          name_reg=name+'_reg0'
+          p = stage_mem(p, '{}[_] += _'.format(name), Cp, name_reg)
       p = expand_dim(p, name_reg, LANE, 'itt', unsafe_disable_checks=True)
       p = expand_dim(p, name_reg, MR//LANE, 'it', unsafe_disable_checks=True)
       p = expand_dim(p, name_reg, NR, 'jt*{}+jtt'.format(LANE), unsafe_disable_checks=True)
       if beta1 == False:
-          p = reuse_buffer(p, "Cb_reg:_", 'tmp')
-          name_reg = 'Cb_reg'
+          p = reuse_buffer(p, "C_reg:_", 'C_reg0')
+      #    p = reuse_buffer(p, "Cb_reg:_", 'tmp')
+          name_reg = 'C_reg'
       if beta1 == True:
-           p = lift_alloc(p, name_reg, n_lifts=5)
-      p = autofission(p, p.find('{}[_] = _'.format(name_reg)).after(), n_lifts=5)
-      p = autofission(p, p.find('{}[_] = _'.format(name)).before(), n_lifts=5)
+          p = lift_alloc(p, name_reg, n_lifts=5)
+      if beta1 == False:
+          p = fuse(p,'for jtt in _: _ #0','for jtt in _: _ #1')
+          p = fuse(p,'for it in _: _ #0','for it in _: _ #1')
+          #p = fuse(p,'for itt in _: _ #0','for itt in _: _ #1')
+          #p = reorder_stmts(p, 'C_reg[jtt + 4 * jt, it, itt] = 0.0; C[jtt + 4 * jt, itt + 4 * it] = C_reg[jtt + 4 * jt, it, itt]') 
+      
+      if beta1 == True:
+          p = autofission(p, p.find('{}[_] = _'.format(name_reg)).after(), n_lifts=5)
+          p = autofission(p, p.find('{}[_] = _'.format(name)).before(), n_lifts=5)
+      else:
+          p = autofission(p, p.find('{}[_] = _ #1'.format(name_reg)).after(), n_lifts=5)
+          p = autofission(p, p.find('{}[_] = _ #1'.format(name)).before(), n_lifts=5)
+          p = fuse(p,'for jt in _: _ #0','for jt in _: _ #1')
+          p = fuse(p,'for jtt in _: _ #0','for jtt in _: _ #1')
+          p = fuse(p,'for it in _: _ #0','for it in _: _ #1')
       
       #TODO: read instructions and type from file
-      if data == "f32": 
-          p = replace(p, 'for itt in _: _ #0', neon_vld_4xf32)
-          p = replace(p, 'for itt in _: _ #1', neon_vst_4xf32)
-          p = vectorial_memory(p, name_reg, Neon)
-      elif data == "f16": 
-          p = replace(p, 'for itt in _: _ #0', neon_vld_8xf16)
-          p = replace(p, 'for itt in _: _ #1', neon_vst_8xf16)
-          p = vectorial_memory(p, name_reg, Neon8f)
-      p = unroll_loop(p,'it')
-      p = unroll_loop(p,'jtt')
-      p = unroll_loop(p,'jt')
+      if beta1 == True:
+          p = replace(p, 'for itt in _: _ #0', intrinsics['load'])#neon_vld_4xf32)
+          p = replace(p, 'for itt in _: _ #1', intrinsics['store'])
+      else:
+          p = replace(p, 'for itt in _: _ #0', intrinsics['zeros'])#neon_vld_4xf32)
+          p = replace(p, 'for itt in _: _ #0', intrinsics['store'])#neon_vld_4xf32)
+          p = replace(p, 'for itt in _: _ #0', intrinsics['load'])
+          p = replace(p, 'for itt in _: _ #1', intrinsics['store'])
+
+      p = vectorial_memory(p, name_reg, Neon)
+      
+      p = loop_unroll(p,['it','jtt','jt'])
       return  simplify(p)
+
+def buffer_unrolling(p,name_reg, dims):
+    p = unroll_buffer(p, '{}:_'.format(name_reg),0)
+    for i in range(dims):
+        ll='{}_{}:_'.format(name_reg,i)
+        p = unroll_buffer(p, ll, 0)
+    return p
 
 def bcast_scalar(p,scal,loop,u1,u2,LANE, data):
     scr = '{}_reg'.format(scal)
@@ -128,40 +133,45 @@ def bcast_scalar(p,scal,loop,u1,u2,LANE, data):
         p = set_memory(p, scr, Neon)
     elif data == "f16":
         p = replace(p, 'for {} in _: _ '.format(loop), neon_broadcast_8xf16)
-        p = set_memory(p, scr, Neon8f)
+        p = set_memory(p, scr,Neon)
     return p
 
-def manage_C_init(p,MR,NR,LANE, data):
-    name = 'Cb'
-    namer = name+'_reg'
-    p = split_loop(p, 'ci', LANE)
-    exp = '{}[cj, {} * cit + citt]'.format(name,LANE)
-    p = stage_mem(p, '{}[_] = _'.format(name), exp, namer)
-    p = expand_dim(p, namer, LANE, 'citt', unsafe_disable_checks=True)
-    p = expand_dim(p, namer, MR//LANE, 'cit', unsafe_disable_checks=True)
-    p = expand_dim(p, namer, NR, 'cj', unsafe_disable_checks=True)
-    p = lift_alloc(p, namer, n_lifts=3)
-    p = autofission(p, p.find('{}[_] = _'.format(namer)).after(), n_lifts=3)
-    if data == "f32":
-        p = set_memory(p, namer, Neon)
-    elif data == "f16":
-        p = set_memory(p, namer, Neon8f)
-    p = bcast_scalar(p,'beta','citt',3,3,LANE, data)
-    p = from_X_to_Xreg(p,'C','ci',MR,3,2,LANE, data)
-    if data == "f32":
-        p = replace(p, 'for citt in _: _ #0', neon_vmul_4xf32)
-        p = replace(p, 'for citt in _: _ #0', neon_vst_4xf32)
-    elif data == "f16":
-        p = replace(p, 'for citt in _: _ #0', neon_vmul_8xf16)
-        p = replace(p, 'for citt in _: _ #0', neon_vst_8xf16)
+def manage_C_init(p,MR,NR,LANE, intrinsics, data):
+    name = 'C'
+    name_reg = name+'_reg'
+    p = loop_split(p, ['i','j'], LANE)
+    p = simplify(p)
+    exp = '{}[jtt + {} * jt, itt + {} * it]'.format(name,LANE,LANE)
+    p = stage_mem(p, '{}[_] = _'.format(name), exp, name_reg)
+    
+    p = expand_dim(p, name_reg, LANE, 'itt', unsafe_disable_checks=True)
+    p = expand_dim(p, name_reg, MR//LANE, 'it', unsafe_disable_checks=True)
+    p = expand_dim(p, name_reg, NR, 'jt*{}+jtt'.format(LANE), unsafe_disable_checks=True)
+    
+    p = lift_alloc(p, name_reg, n_lifts=4)
+    p = autofission(p, p.find('{}[_] = _'.format(name_reg)).after(), n_lifts=3)
+    #if data == "f32":
+    p = set_memory(p, name_reg, Neon)
+    #p = replace(p, 'for itt in _: _ #0', neon_zero_4xf32)
+    
+    #elif data == "f16":
+    #    p = set_memory(p, namer, Neon)
+    #p = bcast_scalar(p,'beta','citt',3,3,LANE, data)
+    #p = from_X_to_Xreg(p,'C','ci',MR,3,2,LANE, data)
+    #if data == "f32":
+    #    p = replace(p, 'for citt in _: _ #0', neon_vmul_4xf32)
+    #    p = replace(p, 'for citt in _: _ #0', neon_vst_4xf32)
+    #elif data == "f16":
+    #    p = replace(p, 'for citt in _: _ #0', neon_vmul_8xf16)
+    #    p = replace(p, 'for citt in _: _ #0', neon_vst_8xf16)
     return simplify(p)
 
 def specialize_microkernel(p, precision, alpha1, beta1):
     args = ["A", "B", "C", "alpha", "beta"]
     for arg in args:
         p = set_precision(p, arg, precision)
-    if beta1 == False:
-        p = set_precision(p, "Cb", precision)
+    #if beta1 == False:
+    #    p = set_precision(p, "Cb", precision)
 
     return p
 
@@ -189,7 +199,6 @@ def from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data):
            p = lift_alloc(p, name_reg, n_lifts=4)
       p = autofission(p, p.find('{}[_] = _'.format(name_reg)).after(), n_lifts=4)
       p = autofission(p, p.find('{}[_] = _'.format(name)).before(), n_lifts=4)
-      print(p) 
       
       #TODO: read instructions and type from file
       if data == "f32": 
@@ -199,68 +208,67 @@ def from_C_to_Creg_1d(p, MR, NR, beta1, LANE, data):
       elif data == "f16": 
           p = replace(p, 'for jtt in _: _ #0', neon_vld_8xf16)
           p = replace(p, 'for jtt in _: _ #1', neon_vst_8xf16)
-          p = vectorial_memory(p, name_reg, Neon8f)
+          p = vectorial_memory(p, name_reg,Neon)
       p = unroll_loop(p,'jt')
       p = unroll_loop(p,'i')
       return  simplify(p)
 
 
-def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, LANE, windowing = 0, data="f32"):
+
+def generate_optimized_ukr(MR, NR, KC, alpha1, beta1, arch, LANE, intrinsics, windowing = 0, data="f32"):
       p = simplify(ukernel_get_ref(MR,NR, alpha1, beta1))
-      if data != "f32":
-          p = specialize_microkernel(p,data,alpha1,beta1)
+      p = specialize_microkernel(p,data,alpha1,beta1)
       if windowing:
-          p = rename(p, "uk_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
+          p = rename(p, "gemm_{}_{}x{}_beta{}_{}".format(arch, MR,NR,1 if beta1 else 0,data))
           p = set_windowing(p)
       else:
-          p = rename(p, "uk_{}x{}_a1{}_b1{}".format(MR,NR,alpha1,beta1))
+          p = rename(p, "gemm_{}_{}x{}_beta{}_{}".format(arch, MR,NR,1 if beta1 else 0, data))
+      
       
       if beta1 == False:
-          p = manage_C_init(p, MR,NR, LANE, data)
-      print("V1 (Figure 6 of CGO 2024 paper)\n",p)
+          p = manage_C_init(p, MR,NR, LANE, intrinsics, data)
+          p = simplify(p)
+      
       #main loop
-      p = split_loop(p, 'i', LANE)
-      p = split_loop(p, 'j', LANE)
+      p = loop_split(p, ['i','j'], LANE)
       p = simplify(p)
-      print("V2 (Figure 7 of CGO 2024 paper)\n",p)
       # C 
-      p = from_C_to_Creg_2d(p, MR, NR, beta1, LANE, data)
+      p = from_C_to_Creg_2d(p, MR, NR, beta1, LANE, intrinsics, data)
       p = simplify(p)
-      print("V3 (Figure 8 of CGO 2024 paper)\n",p)
       # A
-      p = from_X_to_Xreg(p, 'A', 'i' , MR, 5, 4, LANE, data)
+      p = from_X_to_Xreg(p, 'A', 'i' , MR, 5, 4, LANE, intrinsics, data)
       p = simplify(p)
       # B
-      p = from_X_to_Xreg(p, 'B', 'j' , NR,5, 4, LANE, data)
+      p = from_X_to_Xreg(p, 'B', 'j' , NR,5, 4, LANE, intrinsics, data)
       p = simplify(p)
-      print("V4 (Figure 9 of CGO 2024 paper)\n",p)
       
       # fmla
       p = reorder_loops(p,'jtt it')
-      if data == "f32":
-          p = replace(p, 'for itt in _: _ #0', neon_vfmla_4xf32_4xf32)
-      else:
-          p = replace(p, 'for itt in _: _ #0', neon_vfmla_8xf16_8xf16)
+      print(p)
+      #p = replace(p, 'for itt in _: _ #0', intrinsics['fmla'])
       p = simplify(p)
-      print("V5 (Figure 10 of CGO 2024 paper)\n",p)
+      p = replace(p, 'for itt in _: _ #0', neon_vfmladrian_4xf32_4xf32)
+      p = simplify(p)
+      
       #unroll A and B loads
-      p = unroll_loop(p,'it')
-      p = unroll_loop(p,'jt')
-      print("V6 (Figure 11 of CGO 2024 paper)\n",p)
+      p = loop_unroll(p,['it','jt'])
+      p = simplify(p)
       
       #unroll fmla
-      p = unroll_loop(p,'jtt')
-      p = unroll_loop(p,'it')
-      p = unroll_loop(p,'jt')
+      p = loop_unroll(p,['jtt','it','jt'])
+      p = simplify(p)
       
       #unroll C store
-      p = unroll_loop(p,'it')
-      p = unroll_loop(p,'jtt')
-      p = unroll_loop(p,'jt')
-      
-      if beta1 == False:
-          p = manage_C_end(p, MR,NR, LANE)
-      
+      p = loop_unroll(p,['it','jtt','jt'])
+      p = simplify(p)
+      p = buffer_unrolling(p,'C_reg', NR)
+      p = simplify(p)
+      p = buffer_unrolling(p,'A_reg', 0)
+      print(p)
+      try:
+          p = buffer_unrolling(p,'B_reg', 0)
+      except:
+          print("WARNING with {}x{}!!".format(MR,NR))
       return p
 
 
